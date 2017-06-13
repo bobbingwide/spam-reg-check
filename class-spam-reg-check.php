@@ -17,6 +17,14 @@ class spam_reg_check {
 	 * spam_reg_check constructor.
 	 */
 		public function __construct() {
+		
+		if ( ob_get_level() ) {
+			echo ob_get_clean();
+		}
+		echo __METHOD__;
+		echo time();
+		echo PHP_EOL;
+		flush();
 		$this->is_multisite();
 		$this->list_all_users();
 		
@@ -40,8 +48,12 @@ class spam_reg_check {
 	
 		$assoc_args['count_total'] = false;	 // May improve performance if pagination is not needed
 		$assoc_args['orderby'] = "ID";
-		$assoc_args['order'] = "DESC";
-		
+		$assoc_args['order'] = "ASC";
+		//$assoc_args['number'] = 10;
+		//$assoc_args['paged'] = 1;
+		$assoc_args['meta_key'] = "spam_reg_check";
+		$assoc_args['meta_compare'] = "NOT EXISTS";
+		//print_r( $assoc_args );
 		$this->users = get_users( $assoc_args );
 		//print_r( $this->users );
 	
