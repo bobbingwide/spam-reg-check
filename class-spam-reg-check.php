@@ -10,21 +10,32 @@
 class spam_reg_check {
 
 	public $users;
+	public $is_multisite = false;
 
 
-    /**
-     * spam_reg_check constructor.
-     */
-    public function __construct() {
+	/**
+	 * spam_reg_check constructor.
+	 */
+		public function __construct() {
+		$this->is_multisite();
 		$this->list_all_users();
-		$this->display_users();
+		
+		$this->summarize();
+		//$this->display_users();
 		$this->check_each_user();
+		
+		$this->list_all_users();
+		$this->summarize();
 	
 	}
+	
+	function is_multisite() {
+		$this->is_multisite = is_multisite();
+	}
 
-    /**
-     * Lists all the registered users in reverse registration order
-     */
+	/**
+	 * Lists all the registered users in reverse registration order
+	*/
 	public function list_all_users() {
 	
 		$assoc_args['count_total'] = false;	 // May improve performance if pagination is not needed
@@ -35,7 +46,7 @@ class spam_reg_check {
 		//print_r( $this->users );
 	
 	}
-	
+
 	/**
 	 * We need to be able to detect and eliminate spam registrations
 	 * 
@@ -136,10 +147,17 @@ class spam_reg_check {
 		$output_array[] = $user->data->display_name;
 		$output_array[] = $user->data->user_url;
 		$output_array[] = $user->data->user_activation_key;
+		$output_array[] = $user->data->user_registered;
 		$output_array[] = $user->data->user_status;
+		
+		if ( $this->is_multisite ) {
+		
+			$output_array[] = $user->data->spam;
+			$output_array[] = $user->data->deleted;
+		}
 		$output_array[] = implode( " ", $user->roles );
 		$output_array[] = $this->get_spam_reg_check( $user );
-		$output = implode( " ", $output_array );
+		$output = implode( PHP_EOL, $output_array );
 		echo $output . PHP_EOL;
 	}
 	
@@ -148,6 +166,19 @@ class spam_reg_check {
 		//print_r( $user );
 		return $user_meta;
 	}
+	
+	/**
+	 * Tests if the user is marked as a spam user
+	 *
+	 * Note: spam is only available for WPMS
+	 */
+	function is_spam_user( $user ) {
+		$spammer = false;
+		$spammer |= ( "0" !== $user->data->user_status );
+		$spammer |= ( false !== strpos( $user->data->user_activation_key, ":spam" ) );
+		$spammer |= ( 0 == $this->has_roles( $user ) );
+		return $spammer;
+	}	
 	
 	/**
 	 * Determine if this is a spam registration
@@ -160,11 +191,7 @@ class spam_reg_check {
 	 * @return bool true if the user is a spammer
 	 */
 	function check_user( $user ) {
-		$spammer = false;
-		$spammer |= ( "0" !== $user->data->user_status );
-		$spammer |= ( false !== strpos( $user->data->user_activation_key, ":spam" ) );
-		$spammer |= ( 0 == $this->has_roles( $user ) );
-		
+		$spammer = $this->is_spam_user( $user );
 		if ( !$spammer ) {
 			$spammer = $this->manual_check( $user );
 		} else {
@@ -176,6 +203,8 @@ class spam_reg_check {
 	function manual_check( $user ) {
 		echo PHP_EOL;
 		$this->display_user( $user );
+		
+		$this->display_more( $user );
 		$spammer = $this->ask( $user );
 		return $spammer;
 	}
@@ -213,14 +242,13 @@ class spam_reg_check {
 	 */
 	
 	function display_more( $user ) {
-		echo $user->data->user_registered;
 		$user_meta = $this->get_user_meta( $user );
 		$this->display_relevant_user_meta( $user_meta );
 	}
 	
 	function display_relevant_user_meta( $user_meta ) {
 		foreach ( $user_meta as $key => $data ) {
-			if ( array_key_exists( $key, array_flip( array( "first_name", "last_name", "description", "spam_checked" ) ) ) ) {
+			if ( array_key_exists( $key, array_flip( array( "first_name", "last_name", "description", "spam_checked", "city", "country", "dob", "sex" ) ) ) ) {
 				if ( count( $data ) ) {
 					$flat_data = implode( " ", $data );
 				}
@@ -236,22 +264,70 @@ class spam_reg_check {
 	
 	
 	/**
-	 * User status is normally 0
+	 * Marks the user as a spammer
+	 * 
+	 * 
+	 * Field       | Normal value | Spam value	   | Notes
+	 * ----------- | ------------ | -----------    | ------
+	 * user_status | 0            | 1						   | deprecated field?
+	 * spam        | 0            | 1						   | WPMS only?
+	 * deleted     | 0            | 0						   | WPMS only?
+	 * user_activation_key | ""   | timestamp:spam | see below
+	 * 
+	 * 
+	 * - user_activation_key is normally 
+	 *   blank ( "" ) for an activated user,  
+	 *   or a passwordMD5 field for one that's not yet confirmed
+	 *   or time:passwordMD5 for a password reset
+	 * Setting the timestamp part to the current time indicates when we marked the user as spammed.
+	 * 
 	 * We want to mark spam registrations as something else
 	 * We also need to know when they were spam registered or spam checked
 	 * We can do this by updating the user_activation_key to password expired format
 	 * with the timestamp part set to the spam check date and the password reset part to :spam
 	 *
 	 */
-	
 	public function mark_as_spammer( $user ) {
 		global $wpdb;
 		$user_activation_key = time() . ':spam';
-		$wpdb->update( $wpdb->users, array( 'user_status' => '1', 'user_activation_key' => $user_activation_key ), array( 'ID' => $user->ID ) );
-		
+		$set_fields = array( 'user_status' => '1', 
+												 'user_activation_key' => $user_activation_key,
+											);
+		if ( $this->is_multisite ) {
+			$set_fields['spam'] = 1;
+		}
+		$wpdb->update( $wpdb->users, $set_fields, array( 'ID' => $user->ID ) );
 		$user->set_role( "" );
-	return;
-}
+		return;
+	}
+	
+	public function summarize() {
+		$spammers = 0;
+		$tobechecked = 0;
+		$ok = 0;
+		
+		$total = 0;
+		
+		foreach ( $this->users as $user ) {
+			$spammer = $this->is_spam_user( $user );
+			if ( $spammer ) {
+				$spammers++;
+			} else {
+				$spam_reg_check = $this->get_spam_reg_check( $user );
+				if ( $spam_reg_check ) {
+					$ok++;
+				} else {
+					$tobechecked++;
+				}	
+			}
+			$total++;
+		}
+		echo "Spammers: $spammers" . PHP_EOL;
+		echo "To be checked: $tobechecked" . PHP_EOL;
+		echo "OK: $ok" . PHP_EOL;
+		echo "Total: $total" . PHP_EOL;
+	}	
+			
 	
 	
 
